@@ -1,7 +1,7 @@
 samtools
 ========
 
-This is the official development repository for samtools.
+This repository tracks the official one for samtools, and adds Ubuntu x64 binary packages.
 
 The original samtools package has been split into three separate
 but tightly coordinated projects:

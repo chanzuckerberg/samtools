@@ -77,7 +77,7 @@ char bam_aux_getCSi(bam1_t *b, int i);
 char bam_aux_getCQi(bam1_t *b, int i);
 
 #define TV_MIN_ALNROW 2
-#define TV_MAX_GOTO  48
+#define TV_MAX_GOTO  40
 #define TV_LOW_MAPQ  10
 
 #define TV_COLOR_MAPQ   0
@@ -90,8 +90,7 @@ char bam_aux_getCQi(bam1_t *b, int i);
 #define TV_BASE_COLOR_SPACE 1
 
 int tv_pl_func(uint32_t tid, uint32_t pos, int n, const bam_pileup1_t *pl, void *data);
-// Added fn_idx to arguments as index file
-int base_tv_init(tview_t*,const char *fn, const char *fn_fa, const char *fn_idx,
+int base_tv_init(tview_t*,const char *fn, const char *fn_fa,
                  const char *samples, const htsFormat *fmt);
 void base_tv_destroy(tview_t*);
 int base_draw_aln(tview_t *tv, int tid, int pos);

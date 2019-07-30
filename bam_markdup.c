@@ -476,9 +476,8 @@ static int add_duplicate(khash_t(duplicates) *d_hash, bam1_t *dupe) {
    Marking the supplementary reads of a duplicate as also duplicates takes an extra file read/write
    step.  This is because the duplicate can occur before the primary read.*/
 
-static int bam_mark_duplicates(samFile *in, samFile *out, char *prefix, int remove_dups, int32_t max_length,
-                               int do_stats, int supp, int tag, char *out_fn, int write_index) {
-    bam_hdr_t *header = NULL;
+static int bam_mark_duplicates(samFile *in, samFile *out, char *prefix, int remove_dups, int32_t max_length, int do_stats, int supp, int tag) {
+    bam_hdr_t *header;
     khiter_t k;
     khash_t(reads) *pair_hash        = kh_init(reads);
     khash_t(reads) *single_hash      = kh_init(reads);
@@ -490,16 +489,10 @@ static int bam_mark_duplicates(samFile *in, samFile *out, char *prefix, int remo
     int ret;
     int reading, writing, excluded, duplicate, single, pair, single_dup, examined;
     tmp_file_t temp;
-    char *idx_fn = NULL;
-
-    if (!pair_hash || !single_hash || !read_buffer || !dup_hash) {
-        fprintf(stderr, "[markdup] out of memory\n");
-        goto fail;
-    }
 
     if ((header = sam_hdr_read(in)) == NULL) {
         fprintf(stderr, "[markdup] error reading header\n");
-        goto fail;
+        return 1;
     }
 
     // accept unknown, unsorted or coordinate sort order, but error on queryname sorted.
@@ -514,17 +507,13 @@ static int bam_mark_duplicates(samFile *in, samFile *out, char *prefix, int remo
        // (e.g. must ignore in a @CO comment line later in header)
        if ((p != 0) && (p < q)) {
            fprintf(stderr, "[markdup] error: queryname sorted, must be sorted by coordinate.\n");
-           goto fail;
+           return 1;
        }
     }
 
     if (sam_hdr_write(out, header) < 0) {
         fprintf(stderr, "[markdup] error writing header.\n");
-        goto fail;
-    }
-    if (write_index) {
-        if (!(idx_fn = auto_index(out, out_fn, header)))
-            goto fail;
+        return 1;
     }
 
     // used for coordinate order checks
@@ -532,22 +521,18 @@ static int bam_mark_duplicates(samFile *in, samFile *out, char *prefix, int remo
 
     // get the buffer going
     in_read = kl_pushp(read_queue, read_buffer);
-    if (!in_read) {
-        fprintf(stderr, "[markdup] out of memory\n");
-        goto fail;
-    }
 
     // handling supplementary reads needs a temporary file
     if (supp) {
         if (tmp_file_open_write(&temp, prefix, 1)) {
             fprintf(stderr, "[markdup] error: unable to open tmp file %s.\n", prefix);
-            goto fail;
+            return 1;
         }
     }
 
     if ((in_read->b = bam_init1()) == NULL) {
         fprintf(stderr, "[markdup] error: unable to allocate memory for alignment.\n");
-        goto fail;
+        return 1;
     }
 
     reading = writing = excluded = single_dup = duplicate = examined = pair = single = 0;
@@ -558,7 +543,8 @@ static int bam_mark_duplicates(samFile *in, samFile *out, char *prefix, int remo
         if (in_read->b->core.tid >= 0) { // -1 for unmapped reads
             if (in_read->b->core.tid < prev_tid ||
                ((in_read->b->core.tid == prev_tid) && (in_read->b->core.pos < prev_coord))) {
-                goto fail;
+                fprintf(stderr, "[markdup] error: bad coordinate order.\n");
+                return 1;
             }
         }
 
@@ -583,7 +569,7 @@ static int bam_mark_duplicates(samFile *in, samFile *out, char *prefix, int remo
 
                 if (make_pair_key(&pair_key, in_read->b)) {
                     fprintf(stderr, "[markdup] error: unable to assign pair hash key.\n");
-                    goto fail;
+                    return 1;
                 }
 
                 make_single_key(&single_key, in_read->b);
@@ -616,20 +602,21 @@ static int bam_mark_duplicates(samFile *in, samFile *out, char *prefix, int remo
                         if (tag) {
                             if (bam_aux_append(dup, "do", 'Z', strlen(bam_get_qname(bp->p)) + 1, (uint8_t*)bam_get_qname(bp->p))) {
                                 fprintf(stderr, "[markdup] error: unable to append 'do' tag.\n");
-                                goto fail;
+                                return 1;
                             }
                         }
 
                         if (supp) {
                             if (bam_aux_get(dup, "SA") || (dup->core.flag & BAM_FMUNMAP)) {
-                                if (add_duplicate(dup_hash, dup))
-                                    goto fail;
+                                if (add_duplicate(dup_hash, dup)) {
+                                    return 1;
+                                }
                             }
                         }
                     }
                 } else {
                     fprintf(stderr, "[markdup] error: single hashing failure.\n");
-                    goto fail;
+                    return 1;
                 }
 
                 // now do the pair
@@ -648,14 +635,14 @@ static int bam_mark_duplicates(samFile *in, samFile *out, char *prefix, int remo
 
                     if ((mate_tmp = get_mate_score(bp->p)) == -1) {
                         fprintf(stderr, "[markdup] error: no ms score tag. Please run samtools fixmate on file first.\n");
-                        goto fail;
+                        return 1;
                     } else {
                         old_score = calc_score(bp->p) + mate_tmp;
                     }
 
                     if ((mate_tmp = get_mate_score(in_read->b)) == -1) {
                         fprintf(stderr, "[markdup] error: no ms score tag. Please run samtools fixmate on file first.\n");
-                        goto fail;
+                        return 1;
                     } else {
                         new_score = calc_score(in_read->b) + mate_tmp;
                     }
@@ -683,22 +670,23 @@ static int bam_mark_duplicates(samFile *in, samFile *out, char *prefix, int remo
                     if (tag) {
                         if (bam_aux_append(dup, "do", 'Z', strlen(bam_get_qname(bp->p)) + 1, (uint8_t*)bam_get_qname(bp->p))) {
                             fprintf(stderr, "[markdup] error: unable to append 'do' tag.\n");
-                            goto fail;
+                            return 1;
                         }
 
                     }
 
                     if (supp) {
                         if (bam_aux_get(dup, "SA") || (dup->core.flag & BAM_FMUNMAP)) {
-                            if (add_duplicate(dup_hash, dup))
-                                goto fail;
+                            if (add_duplicate(dup_hash, dup)) {
+                                return 1;
+                            }
                         }
                     }
 
                     duplicate++;
                 } else {
                     fprintf(stderr, "[markdup] error: pair hashing failure.\n");
-                    goto fail;
+                    return 1;
                 }
             } else { // do the single (or effectively single) reads
                 int ret;
@@ -725,14 +713,15 @@ static int bam_mark_duplicates(samFile *in, samFile *out, char *prefix, int remo
                         if (tag) {
                             if (bam_aux_append(in_read->b, "do", 'Z', strlen(bam_get_qname(bp->p)) + 1, (uint8_t*)bam_get_qname(bp->p))) {
                                 fprintf(stderr, "[markdup] error: unable to append 'do' tag.\n");
-                                goto fail;
+                                return 1;
                             }
                         }
 
                         if (supp) {
                             if (bam_aux_get(in_read->b, "SA") || (in_read->b->core.flag & BAM_FMUNMAP)) {
-                                if (add_duplicate(dup_hash, in_read->b))
-                                    goto fail;
+                                if (add_duplicate(dup_hash, in_read->b)) {
+                                    return 1;
+                                }
                             }
                         }
 
@@ -758,14 +747,15 @@ static int bam_mark_duplicates(samFile *in, samFile *out, char *prefix, int remo
                         if (tag) {
                             if (bam_aux_append(dup, "do", 'Z', strlen(bam_get_qname(bp->p)) + 1, (uint8_t*)bam_get_qname(bp->p))) {
                                 fprintf(stderr, "[markdup] error: unable to append 'do' tag.\n");
-                                goto fail;
+                                return 1;
                             }
                         }
 
                         if (supp) {
                             if (bam_aux_get(dup, "SA") || (dup->core.flag & BAM_FMUNMAP)) {
-                                if (add_duplicate(dup_hash, dup))
-                                    goto fail;
+                                if (add_duplicate(dup_hash, dup)) {
+                                    return 1;
+                                }
                             }
                         }
                     }
@@ -773,7 +763,7 @@ static int bam_mark_duplicates(samFile *in, samFile *out, char *prefix, int remo
                     single_dup++;
                 } else {
                     fprintf(stderr, "[markdup] error: single hashing failure.\n");
-                    goto fail;
+                    return 1;
                 }
             }
         } else {
@@ -796,12 +786,12 @@ static int bam_mark_duplicates(samFile *in, samFile *out, char *prefix, int remo
                 if (supp) {
                     if (tmp_file_write(&temp, in_read->b)) {
                         fprintf(stderr, "[markdup] error: writing temp output failed.\n");
-                        goto fail;
+                        return 1;
                     }
                 } else {
                     if (sam_write1(out, header, in_read->b) < 0) {
                         fprintf(stderr, "[markdup] error: writing output failed.\n");
-                        goto fail;
+                        return 1;
                     }
                 }
 
@@ -826,20 +816,16 @@ static int bam_mark_duplicates(samFile *in, samFile *out, char *prefix, int remo
 
         // set the next one up for reading
         in_read = kl_pushp(read_queue, read_buffer);
-        if (!in_read) {
-            fprintf(stderr, "[markdup] out of memory\n");
-            goto fail;
-        }
 
         if ((in_read->b = bam_init1()) == NULL) {
             fprintf(stderr, "[markdup] error: unable to allocate memory for alignment.\n");
-            goto fail;
+            return 1;
         }
     }
 
     if (ret < -1) {
         fprintf(stderr, "[markdup] error: truncated input file.\n");
-        goto fail;
+        return 1;
     }
 
     // write out the end of the list
@@ -852,12 +838,12 @@ static int bam_mark_duplicates(samFile *in, samFile *out, char *prefix, int remo
                 if (supp) {
                     if (tmp_file_write(&temp, in_read->b)) {
                         fprintf(stderr, "[markdup] error: writing temp output failed.\n");
-                        goto fail;
+                        return 1;
                     }
                 } else {
                     if (sam_write1(out, header, in_read->b) < 0) {
                         fprintf(stderr, "[markdup] error: writing output failed.\n");
-                        goto fail;
+                        return 1;
                     }
                 }
 
@@ -875,13 +861,13 @@ static int bam_mark_duplicates(samFile *in, samFile *out, char *prefix, int remo
 
         if (tmp_file_end_write(&temp)) {
             fprintf(stderr, "[markdup] error: unable to end tmp writing.\n");
-            goto fail;
+            return 1;
         }
 
         // read data from temp file and mark duplicate supplementary alignments
 
-        if (tmp_file_begin_read(&temp)) {
-            goto fail;
+        if (tmp_file_begin_read(&temp, NULL)) {
+            return 1;
         }
 
         b = bam_init1();
@@ -899,72 +885,42 @@ static int bam_mark_duplicates(samFile *in, samFile *out, char *prefix, int remo
             if (!remove_dups || !(b->core.flag & BAM_FDUP)) {
                 if (sam_write1(out, header, b) < 0) {
                     fprintf(stderr, "[markdup] error: writing final output failed.\n");
-                    goto fail;
+                    return 1;
                 }
             }
         }
 
         if (ret == -1) {
             fprintf(stderr, "[markdup] error: failed to read tmp file.\n");
-            goto fail;
+            return 1;
         }
 
         for (k = kh_begin(dup_hash); k != kh_end(dup_hash); ++k) {
             if (kh_exist(dup_hash, k)) {
                 free((char *)kh_key(dup_hash, k));
-                kh_key(dup_hash, k) = NULL;
             }
         }
 
-        tmp_file_destroy(&temp);
+        tmp_file_destroy(&temp, b, 0);
+        kh_destroy(duplicates, dup_hash);
         bam_destroy1(b);
     }
 
     if (do_stats) {
-        fprintf(stderr, 
-                "READ: %d\n"
-                "WRITTEN: %d\n"
-                "EXCLUDED: %d\n"
-                "EXAMINED: %d\n"
-                "PAIRED: %d\n"
-                "SINGLE: %d\n"
-                "DULPICATE PAIR: %d\n" 
-                "DUPLICATE SINGLE: %d\n"
-                "DUPLICATE TOTAL: %d\n", reading, writing, excluded, examined, pair, single,
+        fprintf(stderr, "READ %d WRITTEN %d \n"
+            "EXCLUDED %d EXAMINED %d\n"
+            "PAIRED %d SINGLE %d\n"
+            "DULPICATE PAIR %d DUPLICATE SINGLE %d\n"
+            "DUPLICATE TOTAL %d\n", reading, writing, excluded, examined, pair, single,
                                 duplicate, single_dup, single_dup + duplicate);
     }
 
-    if (write_index) {
-        if (sam_idx_save(out) < 0) {
-            print_error_errno("markdup", "writing index failed");
-            goto fail;
-        }
-    }
-
     kh_destroy(reads, pair_hash);
     kh_destroy(reads, single_hash);
     kl_destroy(read_queue, read_buffer);
-    kh_destroy(duplicates, dup_hash);
     bam_hdr_destroy(header);
 
     return 0;
-
- fail:
-    for (rq = kl_begin(read_buffer); rq != kl_end(read_buffer); rq = kl_next(rq))
-        bam_destroy1(kl_val(rq).b);
-    kl_destroy(read_queue, read_buffer);
-
-    for (k = kh_begin(dup_hash); k != kh_end(dup_hash); ++k) {
-        if (kh_exist(dup_hash, k)) {
-            free((char *)kh_key(dup_hash, k));
-        }
-    }
-    kh_destroy(duplicates, dup_hash);
-
-    kh_destroy(reads, pair_hash);
-    kh_destroy(reads, single_hash);
-    bam_hdr_destroy(header);
-    return 1;
 }
 
 
@@ -974,13 +930,13 @@ static int markdup_usage(void) {
     fprintf(stderr, "Option: \n");
     fprintf(stderr, "  -r           Remove duplicate reads\n");
     fprintf(stderr, "  -l INT       Max read length (default 300 bases)\n");
-    fprintf(stderr, "  -S           Mark supplementary alignments of duplicates as duplicates (slower).\n");
+    fprintf(stderr, "  -S           Mark supplemenary alignments of duplicates as duplicates (slower).\n");
     fprintf(stderr, "  -s           Report stats.\n");
     fprintf(stderr, "  -T PREFIX    Write temporary files to PREFIX.samtools.nnnn.nnnn.tmp.\n");
     fprintf(stderr, "  -t           Mark primary duplicates with the name of the original in a \'do\' tag."
                                   " Mainly for information and debugging.\n");
 
-    sam_global_opt_help(stderr, "-.O..@.");
+    sam_global_opt_help(stderr, "-.O..@");
 
     fprintf(stderr, "\nThe input file must be coordinate sorted and must have gone"
                      " through fixmates with the mate scoring option on.\n");
@@ -1065,8 +1021,7 @@ int bam_markdup(int argc, char **argv) {
     t = ((unsigned) time(NULL)) ^ ((unsigned) clock());
     ksprintf(&tmpprefix, "samtools.%d.%u.tmp", (int) getpid(), t % 10000);
 
-    ret = bam_mark_duplicates(in, out, tmpprefix.s, remove_dups, max_length, report_stats,
-                              include_supplementary, tag_dup, argv[optind + 1], ga.write_index);
+    ret = bam_mark_duplicates(in, out, tmpprefix.s, remove_dups, max_length, report_stats, include_supplementary, tag_dup);
 
     sam_close(in);
 

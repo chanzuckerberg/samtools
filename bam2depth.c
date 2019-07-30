@@ -79,13 +79,10 @@ static int usage() {
     fprintf(stderr, "   -a                  output all positions (including zero depth)\n");
     fprintf(stderr, "   -a -a (or -aa)      output absolutely all positions, including unused ref. sequences\n");
     fprintf(stderr, "   -b <bed>            list of positions or regions\n");
-    fprintf(stderr, "   -X                  use customized index files\n");
     fprintf(stderr, "   -f <list>           list of input BAM filenames, one per line [null]\n");
-    fprintf(stderr, "   -H                  print a file header\n");
     fprintf(stderr, "   -l <int>            read length threshold (ignore reads shorter than <int>) [0]\n");
     fprintf(stderr, "   -d/-m <int>         maximum coverage depth [8000]. If 0, depth is set to the maximum\n"
                     "                       integer value, effectively removing any depth limit.\n");  // the htslib's default
-    fprintf(stderr, "   -o FILE             where to write output to [stdout]\n");
     fprintf(stderr, "   -q <int>            base quality threshold [0]\n");
     fprintf(stderr, "   -Q <int>            mapping quality threshold [0]\n");
     fprintf(stderr, "   -r <chr:from-to>    region\n");
@@ -98,12 +95,12 @@ static int usage() {
     fprintf(stderr, "omitted by default; see the -a option.\n");
     fprintf(stderr, "\n");
 
-    return EXIT_FAILURE;
+    return 1;
 }
 
 int main_depth(int argc, char *argv[])
 {
-    int i, n, tid, reg_tid, beg, end, pos, *n_plp, baseQ = 0, mapQ = 0, min_len = 0, has_index_file = 0;
+    int i, n, tid, reg_tid, beg, end, pos, *n_plp, baseQ = 0, mapQ = 0, min_len = 0;
     int all = 0, status = EXIT_SUCCESS, nfiles, max_depth = -1;
     const bam_pileup1_t **plp;
     char *reg = 0; // specified region
@@ -113,9 +110,6 @@ int main_depth(int argc, char *argv[])
     aux_t **data;
     bam_mplp_t mplp;
     int last_pos = -1, last_tid = -1, ret;
-    int print_header = 0;
-    char *output_file = NULL;
-    FILE *file_out = stdout;
 
     sam_global_args ga = SAM_GLOBAL_ARGS_INIT;
     static const struct option lopts[] = {
@@ -124,25 +118,19 @@ int main_depth(int argc, char *argv[])
     };
 
     // parse the command line
-    while ((n = getopt_long(argc, argv, "r:b:Xq:Q:l:f:am:d:Ho:", lopts, NULL)) >= 0) {
+    while ((n = getopt_long(argc, argv, "r:b:q:Q:l:f:am:d:", lopts, NULL)) >= 0) {
         switch (n) {
             case 'l': min_len = atoi(optarg); break; // minimum query length
             case 'r': reg = strdup(optarg); break;   // parsing a region requires a BAM header
             case 'b':
                 bed = bed_read(optarg); // BED or position list file can be parsed now
-                if (!bed) {
-                    print_error_errno("depth", "Could not read file \"%s\"", optarg);
-                    return EXIT_FAILURE;
-                }
+                if (!bed) { print_error_errno("depth", "Could not read file \"%s\"", optarg); return 1; }
                 break;
-            case 'X': has_index_file = 1; break;
             case 'q': baseQ = atoi(optarg); break;   // base quality threshold
             case 'Q': mapQ = atoi(optarg); break;    // mapping quality threshold
             case 'f': file_list = optarg; break;
             case 'a': all++; break;
             case 'd': case 'm': max_depth = atoi(optarg); break; // maximum coverage depth
-            case 'H': print_header = 1; break;
-            case 'o': output_file = optarg; break;
             default:  if (parse_sam_global_opt(n, optarg, lopts, &ga) == 0) break;
                       /* else fall-through */
             case '?': return usage();
@@ -151,40 +139,18 @@ int main_depth(int argc, char *argv[])
     if (optind == argc && !file_list)
         return usage();
 
-    /* output file provided by user */
-    if (output_file != NULL && strcmp(output_file,"-")!=0) {
-        file_out = fopen( output_file, "w" );
-        if (file_out == NULL) {
-            print_error_errno("depth", "Cannot open \"%s\" for writing.", output_file);
-            return EXIT_FAILURE;
-        }
-    }
-
-
     // initialize the auxiliary data structures
     if (file_list)
     {
-        if (has_index_file) {
-            print_error("depth", "The -f option cannot be combined with -X");
-            return 1;
-        }
-        if ( read_file_list(file_list,&nfiles,&fn) ) return EXIT_FAILURE;
+        if ( read_file_list(file_list,&nfiles,&fn) ) return 1;
         n = nfiles;
         argv = fn;
         optind = 0;
     }
-    else if (has_index_file) { // Calculate # of input BAM files
-        if ((argc - optind) % 2 != 0) {
-            fprintf(stderr, "Error: Odd number of filenames detected! Each BAM file should have an index file\n");
-            return 1;
-        }
-        n = (argc - optind) / 2;
-    } else {
-        n = argc - optind;
-    }
+    else
+        n = argc - optind; // the number of BAMs on the command line
     data = calloc(n, sizeof(aux_t*)); // data[i] for the i-th input
     reg_tid = 0; beg = 0; end = INT_MAX;  // set the default region
-
     for (i = 0; i < n; ++i) {
         int rf;
         data[i] = calloc(1, sizeof(aux_t));
@@ -197,32 +163,24 @@ int main_depth(int argc, char *argv[])
         rf = SAM_FLAG | SAM_RNAME | SAM_POS | SAM_MAPQ | SAM_CIGAR | SAM_SEQ;
         if (baseQ) rf |= SAM_QUAL;
         if (hts_set_opt(data[i]->fp, CRAM_OPT_REQUIRED_FIELDS, rf)) {
-            print_error_errno("depth", "Failed to set CRAM_OPT_REQUIRED_FIELDS value");
-            status = EXIT_FAILURE;
-            goto depth_end;
+            fprintf(stderr, "Failed to set CRAM_OPT_REQUIRED_FIELDS value\n");
+            return 1;
         }
         if (hts_set_opt(data[i]->fp, CRAM_OPT_DECODE_MD, 0)) {
-            print_error_errno("depth", "Failed to set CRAM_OPT_DECODE_MD value");
-            status = EXIT_FAILURE;
-            goto depth_end;
+            fprintf(stderr, "Failed to set CRAM_OPT_DECODE_MD value\n");
+            return 1;
         }
         data[i]->min_mapQ = mapQ;                    // set the mapQ filter
         data[i]->min_len  = min_len;                 // set the qlen filter
         data[i]->hdr = sam_hdr_read(data[i]->fp);    // read the BAM header
         if (data[i]->hdr == NULL) {
-            print_error_errno("depth", "Couldn't read header for \"%s\"",
-                              argv[optind+i]);
+            fprintf(stderr, "Couldn't read header for \"%s\"\n",
+                    argv[optind+i]);
             status = EXIT_FAILURE;
             goto depth_end;
         }
         if (reg) { // if a region is specified
-            hts_idx_t *idx = NULL;
-            // If index filename has not been specfied, look in BAM folder
-            if (has_index_file) {
-                idx = sam_index_load2(data[i]->fp, argv[optind+i], argv[optind+i+n]);  // load the index
-            } else {
-                idx = sam_index_load(data[i]->fp, argv[optind+i]);
-            }
+            hts_idx_t *idx = sam_index_load(data[i]->fp, argv[optind+i]);  // load the index
             if (idx == NULL) {
                 print_error("depth", "can't load index for \"%s\"", argv[optind+i]);
                 status = EXIT_FAILURE;
@@ -237,14 +195,7 @@ int main_depth(int argc, char *argv[])
             }
         }
     }
-    if (print_header) {
-        fputs("#CHROM\tPOS", file_out);
-        for (i = 0; i < n; ++i) {
-            fputc('\t', file_out);
-            fputs(argv[optind+i], file_out);
-            }
-        fputc('\n', file_out);
-        }
+
     h = data[0]->hdr; // easy access to the header of the 1st BAM
     if (reg) {
         beg = data[0]->iter->beg; // and to the parsed region coordinates
@@ -271,10 +222,10 @@ int main_depth(int argc, char *argv[])
                         // Horribly inefficient, but the bed API is an obfuscated black box.
                         if (bed && bed_overlap(bed, h->target_name[last_tid], last_pos, last_pos + 1) == 0)
                             continue;
-                        fputs(h->target_name[last_tid], file_out); fprintf(file_out, "\t%d", last_pos+1);
+                        fputs(h->target_name[last_tid], stdout); printf("\t%d", last_pos+1);
                         for (i = 0; i < n; i++)
-                            fputc('\t', file_out), fputc('0', file_out);
-                        fputc('\n', file_out);
+                            putchar('\t'), putchar('0');
+                        putchar('\n');
                     }
                 }
                 last_tid++;
@@ -288,17 +239,17 @@ int main_depth(int argc, char *argv[])
                 if (last_pos < beg) continue; // out of range; skip
                 if (bed && bed_overlap(bed, h->target_name[tid], last_pos, last_pos + 1) == 0)
                     continue;
-                fputs(h->target_name[tid], file_out); fprintf(file_out, "\t%d", last_pos+1);
+                fputs(h->target_name[tid], stdout); printf("\t%d", last_pos+1);
                 for (i = 0; i < n; i++)
-                    fputc('\t', file_out), fputc('0', file_out);
-                fputc('\n', file_out);
+                    putchar('\t'), putchar('0');
+                putchar('\n');
             }
 
             last_tid = tid;
             last_pos = pos;
         }
         if (bed && bed_overlap(bed, h->target_name[tid], pos, pos + 1) == 0) continue;
-        fputs(h->target_name[tid], file_out); fprintf(file_out, "\t%d", pos+1); // a customized printf() would be faster
+        fputs(h->target_name[tid], stdout); printf("\t%d", pos+1); // a customized printf() would be faster
         for (i = 0; i < n; ++i) { // base level filters have to go here
             int j, m = 0;
             for (j = 0; j < n_plp[i]; ++j) {
@@ -307,9 +258,9 @@ int main_depth(int argc, char *argv[])
                 else if (p->qpos < p->b->core.l_qseq &&
                          bam_get_qual(p->b)[p->qpos] < baseQ) ++m; // low base quality
             }
-            fprintf(file_out, "\t%d", n_plp[i] - m); // this the depth to output
+            printf("\t%d", n_plp[i] - m); // this the depth to output
         }
-        fputc('\n', file_out);
+        putchar('\n');
     }
     if (ret < 0) status = EXIT_FAILURE;
     free(n_plp); free(plp);
@@ -326,10 +277,10 @@ int main_depth(int argc, char *argv[])
                 if (last_pos >= end) break;
                 if (bed && bed_overlap(bed, h->target_name[last_tid], last_pos, last_pos + 1) == 0)
                     continue;
-                fputs(h->target_name[last_tid], file_out); fprintf(file_out, "\t%d", last_pos+1);
+                fputs(h->target_name[last_tid], stdout); printf("\t%d", last_pos+1);
                 for (i = 0; i < n; i++)
-                    fputc('\t', file_out), fputc('0', file_out);
-                fputc('\n', file_out);
+                    putchar('\t'), putchar('0');
+                putchar('\n');
             }
             last_tid++;
             last_pos = -1;
@@ -339,15 +290,6 @@ int main_depth(int argc, char *argv[])
     }
 
 depth_end:
-    if (fclose(file_out) != 0) {
-        if (status == EXIT_SUCCESS) {
-            print_error_errno("depth", "error on closing \"%s\"",
-                              (output_file && strcmp(output_file, "-") != 0
-                               ? output_file : "stdout"));
-            status = EXIT_FAILURE;
-        }
-    }
-
     for (i = 0; i < n && data[i]; ++i) {
         bam_hdr_destroy(data[i]->hdr);
         if (data[i]->fp) sam_close(data[i]->fp);

@@ -1,32 +1,3 @@
-Release a.b
------------
-
-* In samtools mpileup, a deletion on the reverse strand is now marked
-  with a different character ('#') than the one used on a forward strand ('*'),
-  if '--reverse-del' option is used.
-
-* In samtools split, the '-u' option no longer accepts an extra file name
-  from which a replacement header was read.  The two file names were
-  separated using a colon, which caused problems on Windows and prevented
-  the use of URLs.  A new '-h' option has been added to allow the replacement
-  header file to be specified in its own option.
-
-* Fixed bug where samtools split would crash if it read a SAM header that
-  contained an @RG line with no ID tag. (#954, reported by @blue-bird1)
-
-* Fixed bug where stats could over-estimate coverage when using the
-  target-regions option or when a region was specified on the command-line.
-  (#1025, reported by Miguel Machado; #1029, reported by Jody Phelan).
-
-* Fixed error in stats GCD percentile depth calculation when the depth to be
-  reported fell between two bins.  It would report the depth entirely from the
-  lower bin instead of taking a weighted average of the two.
-
-* Fixed bug where the samtools fastq -i would output incorrect information
-  in the Casava tags for dual-index reads.  It also now prints the tags
-  for dual indicies in the same way as bcl2fastq, using a '+' sign between
-  the two parts of the index.
-
 Release 1.9 (18th July 2018)
 ----------------------------
 
@@ -120,8 +91,8 @@ Release 1.9 (18th July 2018)
    - Fixed compilation problems when using C_INCLUDE_PATH. (#870; #817 reported
      by Robert Boissy)
 
-   - Fixed --version when built from a Git repository. (#844, thanks to
-     John Marshall)
+   - Fixed --version when built from a Git repository. (#844, thanks to John
+     Marshall)
 
    - Use noenhanced mode for title in plot-bamstats.  Prevents unwanted
      interpretation of characters like underscore in gnuplot version 5. (#829,

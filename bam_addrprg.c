@@ -71,7 +71,6 @@ static void cleanup_opts(parsed_opts_t* opts)
     free(opts->rg_id);
     free(opts->output_name);
     free(opts->input_name);
-    free(opts->rg_line);
     if (opts->p.pool) hts_tpool_destroy(opts->p.pool);
     sam_global_args_free(&opts->ga);
     free(opts);
@@ -223,7 +222,7 @@ static void usage(FILE *fp)
             "  -r STRING @RG line text\n"
             "  -R STRING ID of @RG line in existing header to use\n"
             );
-    sam_global_opt_help(fp, "..O..@.");
+    sam_global_opt_help(fp, "..O..@");
 }
 
 static bool parse_args(int argc, char** argv, parsed_opts_t** opts)
@@ -317,7 +316,6 @@ static bool parse_args(int argc, char** argv, parsed_opts_t** opts)
             cleanup_opts(retval);
             return false;
         }
-        free(retval->rg_line);
         retval->rg_line = tmp;
     }
     retval->input_name = strdup(argv[optind+0]);
@@ -438,16 +436,11 @@ static bool init(const parsed_opts_t* opts, state_t** state_out) {
     return true;
 }
 
-static bool readgroupise(parsed_opts_t *opts, state_t* state)
+static bool readgroupise(state_t* state)
 {
     if (sam_hdr_write(state->output_file, state->output_header) != 0) {
         print_error_errno("addreplacerg", "[%s] Could not write header to output file", __func__);
         return false;
-    }
-    char *idx_fn = NULL;
-    if (opts->ga.write_index) {
-        if (!(idx_fn = auto_index(state->output_file, opts->output_name, state->output_header)))
-            return false;
     }
 
     bam1_t* file_read = bam_init1();
@@ -458,25 +451,14 @@ static bool readgroupise(parsed_opts_t *opts, state_t* state)
         if (sam_write1(state->output_file, state->output_header, file_read) < 0) {
             print_error_errno("addreplacerg", "[%s] Could not write read to output file", __func__);
             bam_destroy1(file_read);
-            free(idx_fn);
             return false;
         }
     }
     bam_destroy1(file_read);
     if (ret != -1) {
         print_error_errno("addreplacerg", "[%s] Error reading from input file", __func__);
-        free(idx_fn);
         return false;
     } else {
-
-        if (opts->ga.write_index) {
-            if (sam_idx_save(state->output_file) < 0) {
-                print_error_errno("addreplacerg", "[%s] Writing index failed", __func__);
-                free(idx_fn);
-                return false;
-            }
-        }
-        free(idx_fn);
         return true;
     }
 }
@@ -490,7 +472,7 @@ int main_addreplacerg(int argc, char** argv)
     if (opts == NULL) return EXIT_SUCCESS; // Not an error but user doesn't want us to proceed
     if (!opts || !init(opts, &state)) goto error;
 
-    if (!readgroupise(opts, state)) goto error;
+    if (!readgroupise(state)) goto error;
 
     cleanup_state(state);
     cleanup_opts(opts);

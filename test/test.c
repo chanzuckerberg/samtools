@@ -28,11 +28,6 @@ DEALINGS IN THE SOFTWARE.  */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <errno.h>
 #include <htslib/sam.h>
 
 #include "test.h"
@@ -46,28 +41,11 @@ void xfreopen(const char *path, const char *mode, FILE *stream)
     }
 }
 
-int redirect_stderr(const char *path) {
-    int fd = open(path, O_WRONLY|O_TRUNC|O_CREAT, 0666);
-    if (!fd) {
-        fprintf(stderr, "Couldn't open \"%s\" : %s\n", path, strerror(errno));
-        exit(2);
-    }
-    fflush(stderr);
-    dup2(fd, STDERR_FILENO);
-    return fd;
-}
-
-void flush_and_restore_stderr(int orig_stderr, int redirect_fd) {
-    fflush(stderr);
-    dup2(orig_stderr, STDERR_FILENO);
-    close(redirect_fd);
-}
-
 void dump_hdr(const bam_hdr_t* hdr)
 {
     printf("n_targets: %d\n", hdr->n_targets);
     printf("ignore_sam_err: %d\n", hdr->ignore_sam_err);
-    printf("l_text: %zu\n", (size_t) hdr->l_text);
+    printf("l_text: %u\n", hdr->l_text);
     printf("idx\ttarget_len\ttarget_name:\n");
     int32_t target;
     for (target = 0; target < hdr->n_targets; ++target) {

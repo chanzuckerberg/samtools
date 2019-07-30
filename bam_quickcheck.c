@@ -46,7 +46,6 @@ static void usage_quickcheck(FILE *write_to)
 "Options:\n"
 "  -v              verbose output (repeat for more verbosity)\n"
 "  -q              suppress warning messages\n"
-"  -u              unmapped input (do not require targets in header)\n"
 "\n"
 "Notes:\n"
 "\n"
@@ -78,16 +77,13 @@ static void usage_quickcheck(FILE *write_to)
 
 int main_quickcheck(int argc, char** argv)
 {
-    int verbose = 0, quiet = 0, unmapped = 0;
+    int verbose = 0, quiet = 0;
     hts_verbose = 0;
 
-    const char* optstring = "vqu";
+    const char* optstring = "vq";
     int opt;
     while ((opt = getopt(argc, argv, optstring)) != -1) {
         switch (opt) {
-        case 'u':
-            unmapped = 1;
-            break;
         case 'v':
             verbose++;
             break;
@@ -144,7 +140,7 @@ int main_quickcheck(int argc, char** argv)
                 if (header == NULL) {
                     QC_ERR(QC_BAD_HEADER, 2, "%s caused an error whilst reading its header.\n", fn);
                 } else {
-                    if (!unmapped && header->n_targets <= 0) {
+                    if (header->n_targets <= 0) {
                         QC_ERR(QC_BAD_HEADER, 2, "%s had no targets in header.\n", fn);
                     }
                     else {

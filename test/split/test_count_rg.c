@@ -66,8 +66,7 @@ int main(int argc, char**argv)
 
     // Setup stderr redirect
     kstring_t res = { 0, 0, NULL };
-    int orig_stderr = dup(STDERR_FILENO); // Save stderr
-    int redirected_stderr;
+    FILE* orig_stderr = fdopen(dup(STDERR_FILENO), "a"); // Save stderr
     char* tempfname = (optind < argc)? argv[optind] : "test_count_rg.tmp";
     FILE* check = NULL;
 
@@ -84,9 +83,9 @@ int main(int argc, char**argv)
     if (verbose) printf("RUN test 1\n");
 
     // test
-    redirected_stderr = redirect_stderr(tempfname);
+    xfreopen(tempfname, "w", stderr); // Redirect stderr to pipe
     bool result_1 = count_RG(hdr1, &count, &output);
-    flush_and_restore_stderr(orig_stderr, redirected_stderr);
+    fclose(stderr);
 
     if (verbose) printf("END RUN test 1\n");
     if (verbose > 1) {
@@ -119,8 +118,8 @@ int main(int argc, char**argv)
     free(res.s);
     remove(tempfname);
     if (failure > 0)
-        fprintf(stderr, "%d failures %d successes\n", failure, success);
-    close(orig_stderr);
+        fprintf(orig_stderr, "%d failures %d successes\n", failure, success);
+    fclose(orig_stderr);
 
     return (success == NUM_TESTS)? EXIT_SUCCESS : EXIT_FAILURE;
 }

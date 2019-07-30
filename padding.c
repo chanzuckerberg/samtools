@@ -62,10 +62,6 @@ static void replace_cigar(bam1_t *b, int n, uint32_t *cigar)
         if (_n == _m) { \
             _m = _m? _m<<1 : 4; \
             _c = (uint32_t*)realloc(_c, _m * 4); \
-            if (!(_c)) { \
-                fprintf(stderr, "[depad] ERROR: Memory allocation failure.\n"); \
-                return -1; \
-            } \
         } \
         _c[_n++] = (_v); \
     } while (0)
@@ -378,7 +374,6 @@ int bam_pad2unpad(samFile *in, samFile *out,  bam_hdr_t *h, faidx_t *fai)
         ret = 1;
     }
     free(r.s); free(q.s); free(posmap);
-    free(cigar2);
     bam_destroy1(b);
     return ret;
 }
@@ -510,7 +505,7 @@ int main_pad2unpad(int argc, char *argv[])
     bam_hdr_t *h = 0, *h_fix = 0;
     faidx_t *fai = 0;
     int c, compress_level = -1, is_long_help = 0;
-    char in_mode[5], out_mode[6], *fn_out = 0, *fn_list = 0, *fn_out_idx = NULL;
+    char in_mode[5], out_mode[6], *fn_out = 0, *fn_list = 0;
     int ret=0;
     sam_global_args ga = SAM_GLOBAL_ARGS_INIT;
 
@@ -597,37 +592,20 @@ int main_pad2unpad(int argc, char *argv[])
         ret = 1;
         goto depad_end;
     }
-    if (ga.write_index) {
-        if (!(fn_out_idx = auto_index(out, fn_out, h_fix))) {
-            ret = 1;
-            goto depad_end;
-        }
-    }
 
     // Do the depad
     if (bam_pad2unpad(in, out, h, fai) != 0) ret = 1;
-
-    if (ga.write_index) {
-        if (sam_idx_save(out) < 0) {
-            print_error_errno("depad", "writing index failed");
-            ret = 1;
-        }
-    }
 
 depad_end:
     // close files, free and return
     if (fai) fai_destroy(fai);
     if (h) bam_hdr_destroy(h);
-    if (h_fix && h_fix != h) bam_hdr_destroy(h_fix);
     if (in) sam_close(in);
     if (out && sam_close(out) < 0) {
         fprintf(stderr, "[depad] error on closing output file.\n");
         ret = 1;
     }
     free(fn_list); free(fn_out);
-    if (fn_out_idx)
-        free(fn_out_idx);
-    sam_global_args_free(&ga);
     return ret;
 }
 
@@ -644,7 +622,7 @@ static int usage(int is_long_help)
     fprintf(stderr, "               Padded reference sequence file [null]\n");
     fprintf(stderr, "  -o FILE      Output file name [stdout]\n");
     fprintf(stderr, "  -?           Longer help\n");
-    sam_global_opt_help(stderr, "-...--.");
+    sam_global_opt_help(stderr, "-...--");
 
     if (is_long_help)
         fprintf(stderr,

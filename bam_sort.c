@@ -1151,9 +1151,9 @@ int* rtrans_build(int n, int n_targets, trans_tbl_t* translation_tbl)
   function is NOT thread safe.
  */
 int bam_merge_core2(int by_qname, char* sort_tag, const char *out, const char *mode,
-                    const char *headers, int n, char * const *fn, char * const *fn_idx,
-                    int flag, const char *reg, int n_threads, const char *cmd,
-                    const htsFormat *in_fmt, const htsFormat *out_fmt, int write_index)
+                    const char *headers, int n, char * const *fn, int flag,
+                    const char *reg, int n_threads, const char *cmd,
+                    const htsFormat *in_fmt, const htsFormat *out_fmt)
 {
     samFile *fpout, **fp = NULL;
     heap1_t *heap = NULL;
@@ -1166,7 +1166,6 @@ int bam_merge_core2(int by_qname, char* sort_tag, const char *out, const char *m
     bam_hdr_t **hdr = NULL;
     trans_tbl_t *translation_tbl = NULL;
     int *rtrans = NULL;
-    char *out_idx_fn = NULL;
     merged_header_t *merged_hdr = init_merged_header();
     if (!merged_hdr) return -1;
 
@@ -1317,13 +1316,7 @@ int bam_merge_core2(int by_qname, char* sort_tag, const char *out, const char *m
             goto fail;
         }
         for (i = 0; i < n; ++i) {
-            hts_idx_t *idx = NULL;
-            // If index filename has not been specfied, look in BAM folder
-            if (fn_idx != NULL) {
-                idx = sam_index_load2(fp[i], fn[i], fn_idx[i]);
-            } else {
-                idx = sam_index_load(fp[i], fn[i]);
-            }
+            hts_idx_t *idx = sam_index_load(fp[i], fn[i]);
             // (rtrans[i*n+tid]) Look up what hout tid translates to in input tid space
             int mapped_tid = rtrans[i*hout->n_targets+tid];
             if (idx == NULL) {
@@ -1408,12 +1401,6 @@ int bam_merge_core2(int by_qname, char* sort_tag, const char *out, const char *m
         sam_close(fpout);
         return -1;
     }
-    if (write_index) {
-        if (!(out_idx_fn = auto_index(fpout, out, hout))){
-            sam_close(fpout);
-            return -1;
-        }
-    }
     if (!(flag & MERGE_UNCOMP)) hts_set_threads(fpout, n_threads);
 
     // Begin the actual merge
@@ -1428,7 +1415,6 @@ int bam_merge_core2(int by_qname, char* sort_tag, const char *out, const char *m
         if (sam_write1(fpout, hout, b) < 0) {
             print_error_errno(cmd, "failed writing to \"%s\"", out);
             sam_close(fpout);
-            free(out_idx_fn);
             return -1;
         }
         if ((j = (iter[heap->i]? sam_itr_next(fp[heap->i], iter[heap->i], b) : sam_read1(fp[heap->i], hdr[heap->i], b))) >= 0) {
@@ -1452,14 +1438,6 @@ int bam_merge_core2(int by_qname, char* sort_tag, const char *out, const char *m
         }
         ks_heapadjust(heap, 0, n, heap);
     }
-
-    if (write_index) {
-        if (sam_idx_save(fpout) < 0) {
-            print_error_errno("merge", "writing index failed");
-            goto fail;
-        }
-    }
-    free(out_idx_fn);
 
     // Clean up and close
     if (flag & MERGE_RG) {
@@ -1507,7 +1485,6 @@ int bam_merge_core2(int by_qname, char* sort_tag, const char *out, const char *m
     free(heap);
     free(fp);
     free(rtrans);
-    free(out_idx_fn);
     return -1;
 }
 
@@ -1518,7 +1495,7 @@ int bam_merge_core(int by_qname, const char *out, const char *headers, int n, ch
     strcpy(mode, "wb");
     if (flag & MERGE_UNCOMP) strcat(mode, "0");
     else if (flag & MERGE_LEVEL1) strcat(mode, "1");
-    return bam_merge_core2(by_qname, NULL, out, mode, headers, n, fn, NULL, flag, reg, 0, "merge", NULL, NULL, 0);
+    return bam_merge_core2(by_qname, NULL, out, mode, headers, n, fn, flag, reg, 0, "merge", NULL, NULL);
 }
 
 static void merge_usage(FILE *to)
@@ -1539,19 +1516,17 @@ static void merge_usage(FILE *to)
 "  -c         Combine @RG headers with colliding IDs [alter IDs to be distinct]\n"
 "  -p         Combine @PG headers with colliding IDs [alter IDs to be distinct]\n"
 "  -s VALUE   Override random seed\n"
-"  -b FILE    List of input BAM filenames, one per line [null]\n"
-"  -X         Use customized index files\n");
-    sam_global_opt_help(to, "-.O..@.");
+"  -b FILE    List of input BAM filenames, one per line [null]\n");
+    sam_global_opt_help(to, "-.O..@");
 }
 
 int bam_merge(int argc, char *argv[])
 {
-    int c, is_by_qname = 0, flag = 0, ret = 0, level = -1, has_index_file = 0;
+    int c, is_by_qname = 0, flag = 0, ret = 0, level = -1;
     char *fn_headers = NULL, *reg = NULL, mode[12];
     char *sort_tag = NULL;
     long random_seed = (long)time(NULL);
     char** fn = NULL;
-    char** fn_idx = NULL;
     int fn_size = 0;
 
     sam_global_args ga = SAM_GLOBAL_ARGS_INIT;
@@ -1566,13 +1541,13 @@ int bam_merge(int argc, char *argv[])
         return 0;
     }
 
-    while ((c = getopt_long(argc, argv, "h:nru1R:f@:l:cps:b:O:t:X", lopts, NULL)) >= 0) {
+    while ((c = getopt_long(argc, argv, "h:nru1R:f@:l:cps:b:O:t:", lopts, NULL)) >= 0) {
         switch (c) {
         case 'r': flag |= MERGE_RG; break;
         case 'f': flag |= MERGE_FORCE; break;
-        case 'h': fn_headers = optarg; break;
+        case 'h': fn_headers = strdup(optarg); break;
         case 'n': is_by_qname = 1; break;
-        case 't': sort_tag = optarg; break;
+        case 't': sort_tag = strdup(optarg); break;
         case '1': flag |= MERGE_LEVEL1; level = 1; break;
         case 'u': flag |= MERGE_UNCOMP; level = 0; break;
         case 'R': reg = strdup(optarg); break;
@@ -1580,13 +1555,8 @@ int bam_merge(int argc, char *argv[])
         case 'c': flag |= MERGE_COMBINE_RG; break;
         case 'p': flag |= MERGE_COMBINE_PG; break;
         case 's': random_seed = atol(optarg); break;
-        case 'X': has_index_file = 1; break; // -X flag for index filename
         case 'b': {
             // load the list of files to read
-            if (has_index_file) {
-                fprintf(stderr,"Error: The -b option cannot be combined with -X\n");
-                ret = 1; goto end;
-            }
             int nfiles;
             char **fn_read = hts_readlines(optarg, &nfiles);
             if (fn_read) {
@@ -1625,41 +1595,24 @@ int bam_merge(int argc, char *argv[])
         }
     }
 
-    int nargcfiles = 0;
-    if (has_index_file) { // Calculate # of input BAM files
-        if ((argc - optind - 1) % 2 != 0) {
-            fprintf(stderr, "Odd number of filenames detected! Each BAM file should have an index file\n");
-            return 1;
-        }
-        nargcfiles = (argc - optind - 1) / 2;
-    } else {
-        nargcfiles = argc - optind - 1;
-    }
-
+    int nargcfiles = argc - (optind+1);
     if (nargcfiles > 0) {
         // Add argc files to end of array
         fn = realloc(fn, (fn_size+nargcfiles) * sizeof(char*));
         if (fn == NULL) { ret = 1; goto end; }
         memcpy(fn+fn_size, argv + (optind+1), nargcfiles * sizeof(char*));
-
-        if(has_index_file) {
-            fn_idx = realloc(fn_idx, nargcfiles * sizeof(char*));
-            if (fn_idx == NULL) { ret = 1; goto end; }
-            memcpy(fn_idx+fn_size, argv + nargcfiles + (optind+1), nargcfiles * sizeof(char*));
-        }
     }
     if (fn_size+nargcfiles < 1) {
         print_error("merge", "You must specify at least one (and usually two or more) input files");
         merge_usage(stderr);
-        free(fn_idx);
         return 1;
     }
     strcpy(mode, "wb");
     sam_open_mode(mode+1, argv[optind], NULL);
     if (level >= 0) sprintf(strchr(mode, '\0'), "%d", level < 9? level : 9);
     if (bam_merge_core2(is_by_qname, sort_tag, argv[optind], mode, fn_headers,
-                        fn_size+nargcfiles, fn, fn_idx, flag, reg, ga.nthreads,
-                        "merge", &ga.in, &ga.out, ga.write_index) < 0)
+                        fn_size+nargcfiles, fn, flag, reg, ga.nthreads,
+                        "merge", &ga.in, &ga.out) < 0)
         ret = 1;
 
 end:
@@ -1668,8 +1621,8 @@ end:
         for (i=0; i<fn_size; i++) free(fn[i]);
     }
     free(fn);
-    free(fn_idx);
     free(reg);
+    free(fn_headers);
     sam_global_args_free(&ga);
     return ret;
 }
@@ -2408,7 +2361,7 @@ int bam_sort(int argc, char *argv[])
         switch (c) {
         case 'o': fnout = optarg; o_seen = 1; break;
         case 'n': is_by_qname = 1; break;
-        case 't': sort_tag = optarg; break;
+        case 't': sort_tag = strdup(optarg); break;
         case 'm': {
                 char *q;
                 max_mem = strtol(optarg, &q, 0);

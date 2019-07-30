@@ -66,8 +66,7 @@ test_addrprg($opts, threads=>2);
 test_markdup($opts);
 test_markdup($opts, threads=>2);
 test_bedcov($opts);
-test_split($opts);
-test_split($opts, threads=>2);
+
 
 print "\nNumber of tests:\n";
 printf "    total            .. %d\n", $$opts{nok}+$$opts{nfailed}+$$opts{nxfail}+$$opts{nxpass};
@@ -211,8 +210,6 @@ sub cmd
 #       want_fail=> consider passed() if cmd() returns non-zero
 #       out_map => map output filenames to their expected result file (can be used alongside out)
 #       hskip => number of header lines to ignore during diff
-#       ignore_pg_header => remove @PG header lines
-#       reorder_header => ignore inconsequential header line order changes
 sub test_cmd
 {
     my ($opts,%args) = @_;
@@ -272,15 +269,6 @@ sub test_cmd
         close($fh);
     }
     elsif ( !$$opts{redo_outputs} ) { failed($opts,%args,msg=>$test,reason=>"$$opts{path}/$args{out}: $!"); return; }
-
-    if ($args{reorder_header}) {
-	$exp = reorder_headers($exp, $out);
-    }
-
-    if ($args{ignore_pg_header}) {
-	$out =~ s/(^|\n)\@PG\t[^\n]*\n/$1/sg;
-	$exp =~ s/(^|\n)\@PG\t[^\n]*\n/$1/sg;
-    }
 
     if ( $exp ne $out )
     {
@@ -365,14 +353,6 @@ sub test_cmd
             }
             elsif ( !$$opts{redo_outputs} ) { failed($opts,%args,msg=>$test,reason=>"$$opts{path}/$out_actual: $!"); return; }
 
-	    if ($args{ignore_pg_header}) {
-		$out =~ s/(^|\n)\@PG\t[^\n]*\n/$1/mg;
-		$exp =~ s/(^|\n)\@PG\t[^\n]*\n/$1/mg;
-	    }
-	    if ($args{reorder_header}) {
-		$exp = reorder_headers($exp, $out);
-	    }
-
             if ( $exp ne $out )
             {
                 open(my $fh,'>',"$$opts{path}/$out_expected.new") or error("$$opts{path}/$out_expected.new");
@@ -435,52 +415,6 @@ sub is_file_newer
     return 0;
 }
 
-sub reorder_headers
-{
-    my ($exp, $out) = @_;
-
-    my %headers;
-    while ($exp =~ /^\@(..)(.*)\n/mg) {
-	my ($type, $vals) = ($1, $2);
-	if ($type eq 'PG' || $type eq 'RG') {
-	    my ($id) = $vals =~ /\tID:([^\t]+)/;
-	    push(@{$headers{$type}->{$id || ""}}, $vals);
-	} else {
-	    push(@{$headers{$type}}, $vals || "");
-	}
-    }
-    $exp =~ s/^\@...*\n//mg;
-    my $reorder = "";
-    while ($out =~ /^\@(..)(.*)\n/mg) {
-	my ($type, $vals) = ($1, $2);
-	if ($type eq 'PG' || $type eq 'RG') {
-	    my ($id) = $vals =~ /\tID:([^\t]+)/;
-	    if (exists($headers{$type}->{$id || ""})
-		&& @{$headers{$type}->{$id}}) {
-		my $v = shift(@{$headers{$type}->{$id}});
-		$reorder .= "\@$type$v\n";
-	    }
-	} elsif (exists($headers{$type}) && @{$headers{$type}}) {
-	    my $v = shift(@{$headers{$type}});
-	    $reorder .= "\@$type$v\n";
-	}
-    }
-    # Deal with any left-overs
-    foreach my $type (sort keys %headers) {
-	if ($type eq 'PG' || $type eq 'RG') {
-	    foreach my $id (sort keys %{$headers{$type}}) {
-		foreach my $v (@{$headers{$type}->{$id}}) {
-		    $reorder .= "\@$type$v\n";
-		}
-	    }
-	} else {
-	    foreach my $v (@{$headers{$type}}) {
-		$reorder .= "\@$type$v\n";
-	    }
-	}
-    }
-    return $reorder . $exp;
-}
 
 # The tests --------------------------
 
@@ -818,20 +752,6 @@ sub test_index
     test_cmd($opts,out=>'dat/large_chrom.out',cmd=>"$$opts{bin}/samtools view${threads} $$opts{tmp}/large_chrom.bam ref2");
     test_cmd($opts,out=>'dat/large_chrom.out',cmd=>"$$opts{bin}/samtools view${threads} $$opts{tmp}/large_chrom.bam ref2:1-541556283");
     test_cmd($opts,out=>'dat/test_input_1_a.bam.bai.expected',cmd=>"$$opts{bin}/samtools index${threads} $$opts{path}/dat/test_input_1_a.bam && cat $$opts{path}/dat/test_input_1_a.bam.bai",binary=>1);
-
-    cmd("$$opts{bin}/samtools index${threads} $$opts{path}/dat/test_input_1_b.bam $$opts{tmp}/test_input_1_b.bam.bai");
-    test_cmd($opts,out=>'dat/test_input_1_b.X.expected',cmd=>"$$opts{bin}/samtools view${threads} -X $$opts{path}/dat/test_input_1_b.bam $$opts{tmp}/test_input_1_b.bam.bai ref2");
-    test_cmd($opts,out=>'dat/test_input_1_ab.X.expected',cmd=>"$$opts{bin}/samtools merge${threads} -O sam - -X -cp -R ref2 $$opts{path}/dat/test_input_1_a.bam $$opts{path}/dat/test_input_1_b.bam $$opts{path}/dat/test_input_1_a.bam.bai $$opts{tmp}/test_input_1_b.bam.bai");
-
-    # Check auto-indexing
-    cmd("$$opts{bin}/samtools view${threads} --write-index -o $$opts{path}/dat/auto_indexed.bam $$opts{path}/dat/mpileup.1.sam");
-    test_cmd($opts,out=>"dat/auto_indexed.bam.csi", cmd=>"$$opts{bin}/samtools index${threads} -c $$opts{path}/dat/auto_indexed.bam $$opts{tmp}/auto_indexed.csi && cat $$opts{tmp}/auto_indexed.csi", binary=>1);
-
-    cmd("$$opts{bin}/samtools view${threads} -T $$opts{path}/dat/mpileup.ref.fa --write-index -o $$opts{path}/dat/auto_indexed.cram $$opts{path}/dat/mpileup.1.sam");
-    test_cmd($opts,out=>"dat/auto_indexed.cram.crai", cmd=>"$$opts{bin}/samtools index${threads} $$opts{path}/dat/auto_indexed.cram $$opts{tmp}/auto_indexed.crai && cat $$opts{tmp}/auto_indexed.crai", binary=>1);
-
-    cmd("$$opts{bin}/samtools view${threads} -h --write-index -O sam,level=5 -o $$opts{path}/dat/auto_indexed.sam $$opts{path}/dat/mpileup.1.sam");
-    test_cmd($opts,out=>"dat/auto_indexed.sam.csi", cmd=>"$$opts{bin}/samtools index${threads} -c $$opts{path}/dat/auto_indexed.sam $$opts{tmp}/auto_indexed.csi && cat $$opts{tmp}/auto_indexed.csi", binary=>1);
 }
 
 sub test_mpileup
@@ -879,7 +799,6 @@ sub test_mpileup
     # test that filter mask replaces (not just adds to) default mask
     test_cmd($opts,out=>'dat/mpileup.out.3',cmd=>"$$opts{bin}/samtools mpileup -B --ff 0x14 -f $$opts{tmp}/mpileup.ref.fa.gz -r17:1050-1060 $$opts{tmp}/mpileup.1.bam | grep -v mpileup");
     test_cmd($opts,out=>'dat/mpileup.out.3',cmd=>"$$opts{bin}/samtools mpileup -B --ff 0x14 -f $$opts{tmp}/mpileup.ref.fa.gz -r17:1050-1060 $$opts{tmp}/mpileup.1.cram | grep -v mpileup");
-    test_cmd($opts,out=>'dat/mpileup.out.5',cmd=>"$$opts{bin}/samtools mpileup $$opts{path}/mpileup/overlap.bam | grep 128814202");
 }
 
 sub test_usage
@@ -946,7 +865,7 @@ sub test_usage
     foreach my $subcommand (@subcommands) {
 	# Under msys the isatty function fails to recognise the terminal.
 	# Skip these tests for now.
-	next if ($^O =~ /^msys/ && $subcommand =~ /^(dict|sort|stats|view|fasta|fastq)$/);
+	next if ($^O =~ /^msys/ && $subcommand =~ /^(dict|sort|stats|view)$/);
         test_usage_subcommand($opts,%args,subcmd=>$subcommand);
     }
 }
@@ -1073,8 +992,6 @@ sub querylen
 #   $args->{flags_required} bits which must be set in flags (-f option)
 #   $args->{flags_rejected} bits which must not be set in flags (-F option)
 #   $args->{read_groups}    hash of read groups to output (-r or -R)
-#   $args->{tag}            tag used for checking if reads match tag_values (-d or -D)
-#   $args->{tag_values}     hash of values assocated with tag to output (-d or -D)
 #   $args->{libraries}      hash of libraries to output (-l)
 #   $args->{region}         region list to output (-L and region list)
 #   $args->{strip_tags}     hash of tags to strip from alignments (-x)
@@ -1127,14 +1044,11 @@ sub filter_sam
     my $flags_required = $args->{flags_required} || 0;
     my $flags_rejected = $args->{flags_rejected} || 0;
     my $read_groups    = $args->{read_groups};
-    my $tag            = $args->{tag};
-    my $tag_values     = $args->{tag_values};
     my $libraries      = $args->{libraries};
     my $region         = $args->{region};
     my $strip_tags     = $args->{strip_tags};
     my $min_qlen       = $args->{min_qlen} || 0;
-    my $body_filter = ($flags_required || $flags_rejected
-                       || $read_groups || $tag_values
+    my $body_filter = ($flags_required || $flags_rejected || $read_groups
                        || $min_map_qual || $libraries || $region
                        || $strip_tags || $min_qlen);
     my $lib_read_groups = $libraries ? {} : undef;
@@ -1177,13 +1091,6 @@ sub filter_sam
                     next if ($read_groups && !exists($read_groups->{$group||""}));
                     next if ($lib_read_groups
                              && !exists($lib_read_groups->{$group||""}));
-                }
-                if ($tag_values) {
-                    my $tag_value = '';
-                    for my $i (11 .. $#sam) {
-                        last if (($tag_value) = $sam[$i] =~ /^${tag}:Z:(.*)/);
-                    }
-                    next if (!exists($tag_values->{$tag_value||""}));
                 }
                 if ($region) {
                     my $in_range = 0;
@@ -2024,12 +1931,6 @@ sub test_view
     print $f "grp1\ngrp3\n" || die "Error writing to $fogn : $!\n";
     close($f) || die "Error writing to $fogn : $!\n";
 
-    # Barcodes file for -D test
-    my $fobc = "$$opts{tmp}/view.001.fobc";
-    open(my $f, '>', $fobc) || die "Couldn't open $fobc : $!\n";
-    print $f "ACGT\nAATTCCGG\n" || die "Error writing to $fobc : $!\n";
-    close($f) || die "Error writing to $fobc : $!\n";
-
 
     my @filter_tests = (
         # [test_name, {filter_sam options}, [samtools options], expect_fail]
@@ -2046,25 +1947,6 @@ sub test_view
          ['-R', $fogn, '-r', 'grp2'], 0],
         ['rg_both2', { read_groups => { grp1 => 1, grp2 => 1, grp3 => 1 }},
          ['-r', 'grp2', '-R', $fogn], 0],
-        # Tag with values
-        ['tv_BC_TGCA', { tag => 'BC', tag_values => { TGCA => 1 }},
-         ['-d', 'BC:TGCA'], 0],
-        ['tv_BC_fobc', { tag => 'BC', tag_values => { ACGT => 1, AATTCCGG => 1 }},
-         ['-D', "BC:${fobc}"], 0],
-        ['tv_D_and_d', { tag => 'BC', tag_values => { ACGT => 1, TGCA => 1, AATTCCGG => 1 }},
-         ['-D', "BC:${fobc}", '-d', 'BC:TGCA'], 0],
-        ['tv_d_and_D', { tag => "BC", tag_values => { ACGT => 1, TGCA => 1, AATTCCGG => 1 }},
-         ['-d', 'BC:TGCA', '-D', "BC:${fobc}"], 0],
-        ['tv_D_RG_fogn', { tag => 'RG', tag_values => { grp1 => 1, grp3 => 1 }},
-         ['-D', "RG:${fogn}"], 0],
-        ['tv_d_non_existent_tag', { tag => 'NE', tag_values => { TGCA => 1 }},
-         ['-d', 'NE:TGCA'], 0],
-        ['tv_d_no_tag', { tag => '', tag_values => { TGCA => 1 }},
-         ['-d', 'TGCA'], 1],
-        ['tv_D_invalid_tag_fobc', { tag => 'BClong', tag_values => { ACGT => 1, AATTCCGG => 1 }},
-         ['-D', "BClong:${fobc}"], 1],
-        ['tv_d_different_tags', { tag => 'BC', tag_values => { ACGT => 1, grp2 => 1 }},
-         ['-d', 'BC:ACGT', '-d', 'RG:grp2' ], 1],
         # Libraries
         ['lib2', { libraries => { 'Library 2' => 1 }}, ['-l', 'Library 2'], 0],
         ['lib3', { libraries => { 'Library 3' => 1 }}, ['-l', 'Library 3'], 0],
@@ -2637,24 +2519,13 @@ sub test_bam2fq
     test_cmd($opts, out=>'bam2fq/2.stdout.expected', out_map=>{'1.fq' => 'bam2fq/6.1.fq.expected', '2.fq' => 'bam2fq/6.2.fq.expected', 's.fq' => 'bam2fq/6.s.fq.expected'}, cmd=>"$$opts{bin}/samtools fastq @$threads -N -t -s $$opts{path}/s.fq -1 $$opts{path}/1.fq -2 $$opts{path}/2.fq $$opts{path}/dat/bam2fq.005.sam");
     # -T flag
     test_cmd($opts, out=>'bam2fq/2.stdout.expected', out_map=>{'1.fq' => 'bam2fq/7.1.fq.expected', '2.fq' => 'bam2fq/7.2.fq.expected', 's.fq' => 'bam2fq/7.s.fq.expected'}, cmd=>"$$opts{bin}/samtools fastq @$threads -N -t -T MD,ia -s $$opts{path}/s.fq -1 $$opts{path}/1.fq -2 $$opts{path}/2.fq $$opts{path}/dat/bam2fq.005.sam");
+    # -i flag with no index
+    test_cmd($opts, out=>'bam2fq/2.stdout.expected', out_map=>{'1.fq' => 'bam2fq/7.1.fq.expected', '2.fq' => 'bam2fq/7.2.fq.expected', 's.fq' => 'bam2fq/7.s.fq.expected'}, cmd=>"$$opts{bin}/samtools fastq @$threads -N -t -i -T MD,ia -s $$opts{path}/s.fq -1 $$opts{path}/1.fq -2 $$opts{path}/2.fq $$opts{path}/dat/bam2fq.005.sam");
     # -i flag with index
     test_cmd($opts, out=>'bam2fq/2.stdout.expected', out_map=>{'1.fq' => 'bam2fq/8.1.fq.expected', '2.fq' => 'bam2fq/8.2.fq.expected', 's.fq' => 'bam2fq/8.s.fq.expected', 'i.fq' => 'bam2fq/8.i.fq.expected'}, cmd=>"$$opts{bin}/samtools fastq @$threads --barcode-tag BC -i --index-format 'n2i2' --i1 $$opts{path}/i.fq -s $$opts{path}/s.fq -1 $$opts{path}/1.fq -2 $$opts{path}/2.fq $$opts{path}/dat/bam2fq.004.sam");
 
-    # -i flag with dual index
-    test_cmd($opts, out=>'bam2fq/2.stdout.expected', out_map=>{'1.fq' => 'bam2fq/12.1.fq.expected', '2.fq' => 'bam2fq/12.2.fq.expected', 's.fq' => 'bam2fq/12.s.fq.expected', 'i.fq' => 'bam2fq/12.i.fq.expected'}, cmd=>"$$opts{bin}/samtools fastq @$threads --barcode-tag BC -i --index-format 'i*i*' --i1 $$opts{path}/i.fq -s $$opts{path}/s.fq -1 $$opts{path}/1.fq -2 $$opts{path}/2.fq $$opts{path}/dat/bam2fq.005.sam");
-
-    # -i flag with dual index but no indexes
-    test_cmd($opts, out=>'bam2fq/2.stdout.expected', out_map=>{'1.fq' => 'bam2fq/12.1.fq.expected', '2.fq' => 'bam2fq/12.2.fq.expected', 's.fq' => 'bam2fq/12.s.fq.expected'}, cmd=>"$$opts{bin}/samtools fastq @$threads -i --index-format 'i*i*' -s $$opts{path}/s.fq -1 $$opts{path}/1.fq -2 $$opts{path}/2.fq $$opts{path}/dat/bam2fq.005.sam");
-
     # test for Issue #703 (failure to write all reads on uncollated input)
     test_cmd($opts, out=>'bam2fq/2.stdout.expected', out_map=>{'1.fq' => 'bam2fq/9.1.fq.expected', '2.fq' => 'bam2fq/9.2.fq.expected'}, cmd=>"$$opts{bin}/samtools fastq @$threads -1 $$opts{path}/1.fq -2 $$opts{path}/2.fq $$opts{path}/dat/bam2fq.703.sam");
-
-    # Read 1/2 output, duplicate filename (-1 -2)
-    test_cmd($opts, out=>'bam2fq/2.stdout.expected', out_map=>{'o.fq' => 'bam2fq/11.fq.expected'},cmd=>"$$opts{bin}/samtools fastq @$threads -N -1 $$opts{path}/o.fq -2 $$opts{path}/o.fq $$opts{path}/dat/bam2fq.001.sam");
-    # Read 1/2 output, single filename (-o)
-    test_cmd($opts, out=>'bam2fq/2.stdout.expected', out_map=>{'o.fq' => 'bam2fq/11.fq.expected'},cmd=>"$$opts{bin}/samtools fastq @$threads -N -o $$opts{path}/o.fq $$opts{path}/dat/bam2fq.001.sam");
-    # Read 1/2 output, stdout and discard singletons/other
-    test_cmd($opts, out=>'bam2fq/11.fq.expected', cmd=>"$$opts{bin}/samtools fastq @$threads -N -s $$opts{path}/s.fq -0 $$opts{path}/0.fq $$opts{path}/dat/bam2fq.001.sam");
 }
 
 sub test_depad
@@ -2743,11 +2614,6 @@ sub test_stats
     test_cmd($opts,out=>'stat/12.3reads.nooverlap.expected',cmd=>"$$opts{bin}/samtools stats $$opts{path}/stat/12_overlaps.bam -p -t $$opts{path}/stat/12_3reads.bed | tail -n+4", exp_fix=>$efix);
     test_cmd($opts,out=>'stat/12.2reads.overlap.expected',cmd=>"$$opts{bin}/samtools stats $$opts{path}/stat/12_overlaps.bam -t $$opts{path}/stat/12_2reads.bed | tail -n+4", exp_fix=>$efix);
     test_cmd($opts,out=>'stat/12.2reads.nooverlap.expected',cmd=>"$$opts{bin}/samtools stats $$opts{path}/stat/12_overlaps.bam -p -t $$opts{path}/stat/12_2reads.bed | tail -n+4", exp_fix=>$efix);
-    test_cmd($opts,out=>'stat/13.barcodes.bc.ok.expected',cmd=>"$$opts{bin}/samtools stats $$opts{path}/stat/13_barcodes_ok.sam | tail -n+4", exp_fix=>$efix);
-    test_cmd($opts,out=>'stat/13.barcodes.ox.ok.expected',cmd=>"$$opts{bin}/samtools stats $$opts{path}/stat/13_barcodes_ok_ox_bz.sam | tail -n+4", exp_fix=>$efix);
-    test_cmd($opts,out=>'stat/13.barcodes.fail.expected',cmd=>"$$opts{bin}/samtools stats $$opts{path}/stat/13_barcodes_fail_bc_length.sam | tail -n+4", expect_fail=>1, exp_fix=>$efix);
-    test_cmd($opts,out=>'stat/13.barcodes.fail.expected',cmd=>"$$opts{bin}/samtools stats $$opts{path}/stat/13_barcodes_fail_hyphen.sam | tail -n+4", expect_fail=>1, exp_fix=>$efix);
-    test_cmd($opts,out=>'stat/13.barcodes.fail.expected',cmd=>"$$opts{bin}/samtools stats $$opts{path}/stat/13_barcodes_fail_qt_length.sam | tail -n+4", expect_fail=>1, exp_fix=>$efix);
 }
 
 sub test_merge
@@ -2912,7 +2778,6 @@ sub test_quickcheck
         'quickcheck/7.quickcheck.cram30.ok.cram',
         'quickcheck/8.quickcheck.cram21.truncated.cram',
         'quickcheck/9.quickcheck.cram30.truncated.cram',
-        'quickcheck/10.quickcheck.notargets.bam',
         );
 
     my $all_testfiles;
@@ -2926,9 +2791,6 @@ sub test_quickcheck
 
     test_cmd($opts, out => 'quickcheck/all.expected', want_fail => 1,
         cmd => "$$opts{bin}/samtools quickcheck -v $all_testfiles | sed 's,.*/quickcheck/,,'");
-
-    test_cmd($opts, out => 'dat/empty.expected', want_fail => 0,
-        cmd => "$$opts{bin}/samtools quickcheck -uv $$opts{path}/quickcheck/10.quickcheck.notargets.bam | sed 's,.*/quickcheck/,,'");
 }
 
 sub test_reheader
@@ -2951,51 +2813,32 @@ sub test_reheader
              out=>'reheader/1_view1.sam.expected',
              err=>'reheader/1_view1.sam.expected.err',
              cmd=>"$$opts{bin}/samtools reheader $$opts{path}/reheader/hdr.sam $fn.tmp.bam | $$opts{bin}/samtools view -h | perl -pe 's/\tVN:.*//'",
-	     exp_fix=>1,
-	     reorder_header => 1);
+	     exp_fix=>1);
 
     test_cmd($opts,
              out=>'reheader/2_view1.sam.expected',
              err=>'reheader/2_view1.sam.expected.err',
              cmd=>"$$opts{bin}/samtools reheader $$opts{path}/reheader/hdr.sam $fn.tmp.v21.cram | $$opts{bin}/samtools view -h | perl -pe 's/\tVN:.*//'",
-	     exp_fix=>1,
-	     reorder_header => 1);
+	     exp_fix=>1);
 
     test_cmd($opts,
              out=>'reheader/2_view1.sam.expected',
              err=>'reheader/2_view1.sam.expected.err',
              cmd=>"$$opts{bin}/samtools reheader $$opts{path}/reheader/hdr.sam $fn.tmp.v30.cram | $$opts{bin}/samtools view -h | perl -pe 's/\tVN:.*//'",
-	     exp_fix=>1,
-	     reorder_header => 1);
+	     exp_fix=>1);
 
     # In-place testing
     test_cmd($opts,
              out=>'reheader/3_view1.sam.expected',
              err=>'reheader/3_view1.sam.expected.err',
              cmd=>"$$opts{bin}/samtools reheader --in-place $$opts{path}/reheader/hdr.sam $fn.tmp.v21.cram && $$opts{bin}/samtools view -h $fn.tmp.v21.cram | perl -pe 's/\tVN:.*//'",
-	     exp_fix=>1,
-	     reorder_header => 1);
+	     exp_fix=>1);
 
     test_cmd($opts,
              out=>'reheader/3_view1.sam.expected',
              err=>'reheader/3_view1.sam.expected.err',
              cmd=>"$$opts{bin}/samtools reheader --in-place $$opts{path}/reheader/hdr.sam $fn.tmp.v30.cram && $$opts{bin}/samtools view -h $fn.tmp.v30.cram | perl -pe 's/\tVN:.*//'",
-	     exp_fix=>1,
-	     reorder_header => 1);
-
-    test_cmd($opts,
-             out=>'reheader/4_view1.sam.expected',
-             err=>'reheader/1_view1.sam.expected.err',
-             cmd=>"$$opts{bin}/samtools reheader -c \"sed \'s/2014 Genome/2019 Genome/g\'\" $fn.tmp.bam | $$opts{bin}/samtools view -h | perl -pe 's/\tVN:.*//'",
-	     exp_fix=>1,
-	     reorder_header => 1);
-	     
-    test_cmd($opts,
-             out=>'reheader/5_view1.sam.expected',
-             err=>'reheader/1_view1.sam.expected.err',
-             cmd=>"$$opts{bin}/samtools reheader -c \"sed \'s/2014 Genome/2019 Genome/g\'\" $fn.tmp.v30.cram | $$opts{bin}/samtools view -h | perl -pe 's/\tVN:.*//'",
-	     exp_fix=>1,
-	     reorder_header => 1);    
+	     exp_fix=>1);
 }
 
 sub test_addrprg
@@ -3005,7 +2848,7 @@ sub test_addrprg
     my $threads = exists($args{threads}) ? " -@ $args{threads}" : "";
     test_cmd($opts,out=>'addrprg/1_fixup.sam.expected', err=>'addrprg/1_fixup.sam.expected.err', cmd=>"$$opts{bin}/samtools addreplacerg${threads} -O sam -m overwrite_all $$opts{path}/addrprg/1_fixup.sam");
     test_cmd($opts,out=>'addrprg/2_fixup_orphan.sam.expected', err=>'addrprg/2_fixup_orphan.sam.expected.err', cmd=>"$$opts{bin}/samtools addreplacerg${threads} -O sam -m orphan_only $$opts{path}/addrprg/2_fixup_orphan.sam");
-    test_cmd($opts,out=>'addrprg/3_fixup.sam.expected', err=>'addrprg/3_fixup.sam.expected.err', cmd=>"$$opts{bin}/samtools addreplacerg${threads} -O sam -R '1#9' $$opts{path}/addrprg/1_fixup.sam", want_fail=>1);
+    test_cmd($opts,out=>'addrprg/3_fixup.sam.expected', err=>'addrprg/3_fixup.sam.expected.err', cmd=>"$$opts{bin}/samtools addreplacerg${threads} -O sam -R '1#7' $$opts{path}/addrprg/1_fixup.sam", want_fail=>1);
     test_cmd($opts,out=>'addrprg/4_fixup_norg.sam.expected', err=>'addrprg/4_fixup_norg.sam.expected.err', cmd=>"$$opts{bin}/samtools addreplacerg${threads} -O sam -r '\@RG\\tID:1#8\\tCN:SC' $$opts{path}/addrprg/4_fixup_norg.sam");
     test_cmd($opts,out=>'addrprg/1_fixup.sam.expected', err=>'addrprg/1_fixup.sam.expected.err', cmd=>"$$opts{bin}/samtools addreplacerg${threads} -O sam -m overwrite_all -R '1#8' $$opts{path}/addrprg/1_fixup.sam");
     test_cmd($opts,out=>'addrprg/4_fixup_norg.sam.expected', err=>'addrprg/4_fixup_norg.sam.expected.err', cmd=>"$$opts{bin}/samtools addreplacerg${threads} -O sam -r 'ID:1#8' -r 'CN:SC' $$opts{path}/addrprg/4_fixup_norg.sam");
@@ -3033,20 +2876,3 @@ sub test_bedcov
     test_cmd($opts,out=>'bedcov/bedcov_j.expected',cmd=>"$$opts{bin}/samtools bedcov -j $$opts{path}/bedcov/bedcov.bed $$opts{path}/bedcov/bedcov.bam");
 }
 
-sub test_split
-{
-    my ($opts, %args) = @_;
-
-    my $threads = exists($args{threads}) ? " -@ $args{threads}" : "";
-
-    test_cmd($opts,
-	     out=>"dat/empty.expected",
-	     out_map => {
-		 'split/split.tmp.grp1.sam' => 'split/split.expected.grp1.sam',
-		 'split/split.tmp.grp2.sam' => 'split/split.expected.grp2.sam',
-		 'split/split.tmp.unk.sam' => 'split/split.expected.unk.sam',
-	     },
-	     ignore_pg_header => 1,
-	     reorder_header => 1,
-	     cmd => "$$opts{bin}/samtools split $threads --output-fmt sam -u $$opts{path}/split/split.tmp.unk.sam -f $$opts{path}/split/split.tmp.\%!.\%. $$opts{path}/split/split.sam");
-}
